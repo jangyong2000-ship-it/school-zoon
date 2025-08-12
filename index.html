@@ -4,55 +4,60 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>School Zone Buffer</title>
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    crossorigin=""
-  />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    html, body { height: 100%; margin: 0; }
-    #map { height: 100vh; }
+    html, body { height:100%; margin:0; }
+    #map { height:100vh; }
   </style>
 </head>
 <body>
   <div id="map"></div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // 1) 지도를 띄우고 배경지도 추가
+    // 1) 지도 생성 + 베이스맵
     const map = L.map('map');
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 20,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    // 2) GeoJSON(버퍼) 불러오기
-    //   - 기본: data/buffer.geojson
-    //   - 대안: 저장소 루트의 buffer.geojson
-    async function loadBuffer() {
-      const candidates = ['buffer.geojson'];
-      for (const url of candidates) {
-        try {
-          const res = await fetch(url);
-          if (!res.ok) continue;
-          const gj = await res.json();
+    // 데이터 로드 실패해도 기본 지도가 보이도록 임시 중심 설정
+    map.setView([36.64, 127.49], 12); // 청주 근처 (임시)
 
-          const layer = L.geoJSON(gj, {
-            style: { color: '#ff4d4f', weight: 2, fillOpacity: 0.2 }
-          }).addTo(map);
+    // 2) GeoJSON 로드 (캐시 우회용 쿼리 추가)
+    const url = 'buffer.geojson?v=' + Date.now();
 
-          // 데이터 범위로 화면 맞추기
-          map.fitBounds(layer.getBounds(), { padding: [20, 20] });
-          return;
-        } catch (_) {}
-      }
-      // 실패 시 기본 위치(청주 근처 예시)로
-      map.setView([36.64, 127.49], 12);
-      alert('GeoJSON을 찾지 못했습니다. 파일 경로/이름을 확인하세요.');
-    }
-    loadBuffer();
+    fetch(url).then(async (res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const gj = await res.json();
 
-    // 3) (선택) 현재 위치 표시 – 모바일에서 유용
+      const layer = L.geoJSON(gj, {
+        style: { color: '#ff4d4f', weight: 2, fillOpacity: 0.25 },
+        onEachFeature: (f, l) => {
+          // 속성 팝업(한국어 컬럼명도 그대로 표시)
+          const props = f.properties || {};
+          const rows = Object.entries(props)
+            .map(([k, v]) => `<tr><th style="text-align:left;padding-right:8px;">${k}</th><td>${v ?? ''}</td></tr>`)
+            .join('');
+          l.bindPopup(`<table>${rows}</table>`);
+        }
+      }).addTo(map);
+
+      // 데이터 범위로 화면 맞추기
+      map.fitBounds(layer.getBounds(), { padding: [20, 20] });
+    }).catch(err => {
+      console.error('GeoJSON 로드 실패:', err);
+      alert('GeoJSON 로드에 실패했습니다. 콘솔(F12) 오류를 확인하세요.');
+    });
+
+    // (선택) 현재 위치 마커
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(pos => {
         const { latitude, longitude } = pos.coords;
+        L.marker([latitude, longitude]).addTo(map).bindPopup('내 위치');
+      });
+    }
+  </script>
+</body>
+</html>
