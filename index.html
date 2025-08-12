@@ -30,7 +30,7 @@
     //   - 기본: data/buffer.geojson
     //   - 대안: 저장소 루트의 buffer.geojson
     async function loadBuffer() {
-      const candidates = ['data/buffer.geojson', 'buffer.geojson'];
+      const candidates = ['buffer.geojson'];
       for (const url of candidates) {
         try {
           const res = await fetch(url);
