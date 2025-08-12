@@ -3,46 +3,53 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>School Zone Buffer</title>
+  <title>School Zone Buffer + Live Location</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body { height: 100%; margin: 0; }
     #map { height: 100vh; }
+    .loc-info {
+      position: absolute; z-index: 9999; left: 8px; bottom: 8px;
+      background: rgba(0,0,0,.6); color: #fff; padding: 6px 8px; border-radius: 6px;
+      font-size: 12px; line-height: 1.4;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div class="loc-info" id="locInfo">GPS 대기중…</div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // 지도 생성
+    // ─────────────────────────────
+    // 1) 지도 생성 + 베이스맵
+    // ─────────────────────────────
     const map = L.map('map');
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 20,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    // 기본 중심 (데이터 로드 실패 시 대비)
+    // 데이터 로드 실패해도 기본 지도가 보이도록 임시 중심
     map.setView([36.64, 127.49], 12);
 
-    // 현재 페이지 경로 기준 절대 URL 계산
+    // ─────────────────────────────
+    // 2) 버퍼 GeoJSON 로드 (루트/하위 경로 안전)
+    // ─────────────────────────────
     const rootPath = (function () {
       let p = location.pathname;
-      if (!p.endsWith('/')) p = p.replace(/\/[^/]*$/, '/');
-      return location.origin + p;
+      if (!p.endsWith('/')) p = p.replace(/\/[^/]*$/, '/'); // .../index.html -> .../
+      return location.origin + p; // ex) https://user.github.io/repo/
     })();
+    const bufferUrl = rootPath + 'buffer.geojson?v=' + Date.now();
 
-    // buffer.geojson 파일 절대 경로
-    const url = rootPath + 'buffer.geojson?v=' + Date.now();
-
-    // GeoJSON 로드
-    fetch(url)
+    fetch(bufferUrl)
       .then(res => {
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' for ' + url);
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' for ' + bufferUrl);
         return res.json();
       })
       .then(gj => {
-        const layer = L.geoJSON(gj, {
+        const bufferLayer = L.geoJSON(gj, {
           style: { color: '#ff4d4f', weight: 2, fillOpacity: 0.25 },
           onEachFeature: (f, l) => {
             const rows = Object.entries(f.properties ?? {})
@@ -51,19 +58,71 @@
             l.bindPopup(`<table>${rows}</table>`);
           }
         }).addTo(map);
-        map.fitBounds(layer.getBounds(), { padding: [20, 20] });
+        map.fitBounds(bufferLayer.getBounds(), { padding: [20, 20] });
       })
       .catch(err => {
-        console.error(err);
-        alert('GeoJSON을 불러오지 못했습니다. 콘솔(F12)에서 에러를 확인하세요.');
+        console.warn('GeoJSON 로드 실패:', err);
       });
 
-    // 현재 위치 마커 (선택)
+    // ─────────────────────────────
+    // 3) 현재 위치 "지속" 업데이트 (watchPosition)
+    //    - 고정밀 모드, 캐시 사용 안 함, 타임아웃 설정
+    // ─────────────────────────────
+    const locInfo = document.getElementById('locInfo');
+    let myMarker = null;
+    let accCircle = null;
+
+    function updateMyLocation(lat, lng, acc, speed) {
+      const latlng = [lat, lng];
+
+      if (!myMarker) {
+        myMarker = L.marker(latlng).addTo(map).bindPopup('내 위치');
+      } else {
+        myMarker.setLatLng(latlng);
+      }
+
+      if (!accCircle) {
+        accCircle = L.circle(latlng, {
+          radius: acc || 10,        // 정확도(미터)
+          weight: 1,
+          fillOpacity: 0.15
+        }).addTo(map);
+      } else {
+        accCircle.setLatLng(latlng);
+        accCircle.setRadius(acc || 10);
+      }
+
+      // 위치가 바뀔 때마다 지도를 따라가게(요청사항: 이동 인식이 중요)
+      map.setView(latlng, Math.max(map.getZoom(), 16));
+
+      // 화면 좌하단 정보판 갱신
+      const accStr = (acc != null) ? `${Math.round(acc)} m` : '-';
+      const spd = (speed != null && !Number.isNaN(speed)) ? (speed * 3.6) : null; // m/s -> km/h
+      locInfo.textContent = `위치: ${lat.toFixed(6)}, ${lng.toFixed(6)}  |  정확도: ${accStr}` +
+                            (spd != null ? `  |  속도: ${spd.toFixed(1)} km/h` : '');
+    }
+
+    function handleGeoError(err) {
+      console.warn('Geolocation error:', err);
+      locInfo.textContent = `GPS 오류: ${err.message}`;
+    }
+
     if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(pos => {
-        const { latitude, longitude } = pos.coords;
-        L.marker([latitude, longitude]).addTo(map).bindPopup('내 위치');
-      });
+      const watchId = navigator.geolocation.watchPosition(
+        pos => {
+          const { latitude, longitude, accuracy, speed } = pos.coords;
+          updateMyLocation(latitude, longitude, accuracy, speed);
+        },
+        handleGeoError,
+        {
+          enableHighAccuracy: true,  // 고정밀
+          maximumAge: 0,             // 캐시 사용 안 함
+          timeout: 10000             // 10초 내 수신 없으면 오류
+        }
+      );
+      // 필요 시: navigator.geolocation.clearWatch(watchId);
+    } else {
+      locInfo.textContent = '이 브라우저는 위치 서비스를 지원하지 않습니다.';
     }
   </script>
 </body>
